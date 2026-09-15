@@ -337,6 +337,181 @@ def save_data(data: dict):
     except Exception:
         pass
 
+# ---------------- 生理期独立数据持久化与周期推算逻辑 ----------------
+PERIOD_DATA_FILE = "period_data.json"
+
+def load_period_data() -> dict:
+    """
+    从本地独立 JSON 文件 (period_data.json) 中读取生理期数据与用户周期设置：
+    若文件不存在或格式异常，则自动初始化并返回标准模板结构。
+    """
+    default_data = {
+        "settings": {
+            "cycle_days": 28,      # 月经周期长度（天，默认 28 天，由用户在界面自定义设置）
+            "period_days": 5,      # 经期持续天数（天，默认 5 天，由用户在界面自定义设置）
+            "luteal_days": 14,     # 黄体期推算天数（天，标准医学基准 14 天）
+        },
+        "records": {}              # 每日生理期记录字典，键为 'YYYY-MM-DD'
+    }
+    if os.path.exists(PERIOD_DATA_FILE):
+        try:
+            with open(PERIOD_DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    if "settings" not in data or not isinstance(data["settings"], dict):
+                        data["settings"] = default_data["settings"]
+                    if "records" not in data or not isinstance(data["records"], dict):
+                        data["records"] = {}
+                    return data
+        except Exception:
+            return default_data
+    return default_data
+
+def save_period_data(data: dict):
+    """
+    将生理期数据（含周期设置、经期打卡、爱爱记录、症状记录）独立持久化保存到本地 JSON 文件
+    """
+    try:
+        with open(PERIOD_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def calculate_period_predictions(period_data: dict) -> dict:
+    """
+    根据历史实际经期记录与用户设置的周期参数，推算预测经期、预测排卵期与各生理阶段：
+    算法流程：
+    1. 提取所有标记为 is_period 为 True 的日期并按升序排列；
+    2. 将连续相隔 <= 2 天的经期记录合并为一个经期周期（Period Group），首日即为该周期经期开始日；
+    3. 取最近一次经期开始日，按用户设定的 cycle_days 向后循环推算未来 12 个周期（覆盖全年）；
+    4. 预测经期：未来周期从首日开始持续 period_days 天；
+    5. 预测排卵日：下一次预测经期首日向前倒推 14 天（luteal_days）；
+    6. 预测排卵期（易孕期）：排卵日前 5 天至排卵日后 4 天（共 10 天）；
+    返回包含实际经期、预测经期、排卵期及排卵日集合的字典。
+    """
+    records = period_data.get("records", {})
+    settings = period_data.get("settings", {})
+    cycle_days = int(settings.get("cycle_days", 28))
+    period_days = int(settings.get("period_days", 5))
+    luteal_days = int(settings.get("luteal_days", 14))
+
+    actual_period_dates = set()
+    for d_str, rec in records.items():
+        if isinstance(rec, dict) and rec.get("is_period"):
+            actual_period_dates.add(d_str)
+
+    sorted_actual = sorted([datetime.date.fromisoformat(d) for d in actual_period_dates])
+    period_groups = []
+    if sorted_actual:
+        cur_group = [sorted_actual[0]]
+        for d in sorted_actual[1:]:
+            if (d - cur_group[-1]).days <= 2:
+                cur_group.append(d)
+            else:
+                period_groups.append(cur_group)
+                cur_group = [d]
+        period_groups.append(cur_group)
+
+    pred_period_dates = set()
+    pred_ovulation_dates = set()
+    pred_ovulation_main_dates = set()
+    cycle_milestones = []
+
+    if period_groups:
+        latest_group = period_groups[-1]
+        latest_start = latest_group[0]
+
+        # 从最近一次经期开始推算接下来 12 个周期
+        for i in range(0, 12):
+            cycle_start = latest_start + datetime.timedelta(days=i * cycle_days)
+            cycle_end = cycle_start + datetime.timedelta(days=period_days - 1)
+            next_cycle_start = cycle_start + datetime.timedelta(days=cycle_days)
+            ovulation_day = next_cycle_start - datetime.timedelta(days=luteal_days)
+            fertile_start = ovulation_day - datetime.timedelta(days=5)
+            fertile_end = ovulation_day + datetime.timedelta(days=4)
+
+            # 未来周期（i >= 1）加入预测经期
+            if i >= 1:
+                cur_d = cycle_start
+                while cur_d <= cycle_end:
+                    d_str = cur_d.strftime("%Y-%m-%d")
+                    if d_str not in actual_period_dates:
+                        pred_period_dates.add(d_str)
+                    cur_d += datetime.timedelta(days=1)
+
+            # 排卵日与排卵期
+            pred_ovulation_main_dates.add(ovulation_day.strftime("%Y-%m-%d"))
+            cur_f = fertile_start
+            while cur_f <= fertile_end:
+                d_str = cur_f.strftime("%Y-%m-%d")
+                if d_str not in actual_period_dates and d_str not in pred_period_dates:
+                    pred_ovulation_dates.add(d_str)
+                cur_f += datetime.timedelta(days=1)
+
+            cycle_milestones.append({
+                "cycle_start": cycle_start,
+                "cycle_end": cycle_end,
+                "ovulation_day": ovulation_day,
+                "fertile_start": fertile_start,
+                "fertile_end": fertile_end,
+                "next_start": next_cycle_start,
+            })
+
+    return {
+        "actual_period_dates": actual_period_dates,
+        "pred_period_dates": pred_period_dates,
+        "pred_ovulation_dates": pred_ovulation_dates,
+        "pred_ovulation_main_dates": pred_ovulation_main_dates,
+        "period_groups": period_groups,
+        "cycle_milestones": cycle_milestones,
+    }
+
+def get_day_physiological_phase(target_date_str: str, predictions: dict) -> str:
+    """
+    根据指定日期与周期推算数据，计算并返回当前所处的生理周期阶段描述：
+    如：经期第 X 天、推算排卵日、推算排卵期（易孕期）、推算黄体期、推算卵泡期
+    """
+    try:
+        target_date = datetime.date.fromisoformat(target_date_str)
+    except Exception:
+        return "安全期"
+
+    actual_period_dates = predictions.get("actual_period_dates", set())
+    pred_period_dates = predictions.get("pred_period_dates", set())
+    pred_ovulation_dates = predictions.get("pred_ovulation_dates", set())
+    pred_ovulation_main_dates = predictions.get("pred_ovulation_main_dates", set())
+    period_groups = predictions.get("period_groups", [])
+
+    if target_date_str in actual_period_dates:
+        for grp in period_groups:
+            if target_date in grp:
+                day_num = (target_date - grp[0]).days + 1
+                return f"经期第 {day_num} 天"
+        return "月经期"
+
+    if target_date_str in pred_period_dates:
+        return "预测月经期"
+
+    if target_date_str in pred_ovulation_main_dates:
+        return "推算排卵日"
+
+    if target_date_str in pred_ovulation_dates:
+        return "排卵期（易孕期）"
+
+    milestones = predictions.get("cycle_milestones", [])
+    for m in milestones:
+        c_end = m["cycle_end"]
+        f_start = m["fertile_start"]
+        f_end = m["fertile_end"]
+        n_start = m["next_start"]
+
+        if c_end < target_date < f_start:
+            return "卵泡期（安全期）"
+        elif f_end < target_date < n_start:
+            return "黄体期（安全期）"
+
+    return "安全期"
+
 def main(page: ft.Page):
     """
     主界面逻辑入口：
@@ -370,9 +545,15 @@ def main(page: ft.Page):
     today_str = now.strftime("%Y-%m-%d")
     selected_date_str = today_str  # 当前选中的日期（默认聚焦今天，点击日历各日期可联动切换）
 
-    # 视图状态变量
-    current_tab_index = 0  # 0: 日历打卡, 1: 趋势分析
+    # 视图状态变量 (0: 日历打卡, 1: 趋势分析, 2: 生理期)
+    current_tab_index = 0
     chart_range_limit = 15  # 折线图筛选范围：7, 15, 0 (0表示全部)
+
+    # 生理期独立数据与选中日期状态
+    period_data = load_period_data()
+    period_current_year = now.year
+    period_current_month = now.month
+    period_selected_date_str = today_str
 
     # ---------------- 统计计算与数值格式化辅助函数 ----------------
     def format_weight_val(val: float | None) -> str:
@@ -799,6 +980,316 @@ def main(page: ft.Page):
             actions_alignment=ft.MainAxisAlignment.END,
         )
         show_dialog_compat(dlg)
+
+    # ---------------- 生理期专属业务弹窗与状态控制 ----------------
+    # 严格按照用户指定的爱爱选项（已剔除节育环、皮下埋植）
+    LOVE_OPTIONS = ["安全套", "短效避孕药", "紧急避孕药", "体外射精", "无措施"]
+    # 严格按照用户指定的症状选项（图二红框内的“有哪些疼痛不适”5项）
+    SYMPTOM_OPTIONS = ["头痛", "眩晕", "乳房胀痛", "乳头痒痛", "腰部酸痛"]
+
+    def open_period_settings_dialog():
+        """
+        弹出生理周期基础参数设置对话框：
+        支持用户手动输入自定义周期长度与经期持续天数，数据保存到 period_data.json
+        """
+        settings = period_data.setdefault("settings", {})
+        cur_cycle = settings.get("cycle_days", 28)
+        cur_period = settings.get("period_days", 5)
+
+        cycle_input = ft.TextField(
+            label="月经周期天数（通常 21-35 天）",
+            value=str(cur_cycle),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            hint_text="例如: 28",
+        )
+        period_input = ft.TextField(
+            label="经期持续天数（通常 3-7 天）",
+            value=str(cur_period),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            hint_text="例如: 5",
+        )
+
+        def save_settings(e):
+            """验证并持久化生理期周期设置参数"""
+            try:
+                c_val = int((cycle_input.value or "28").strip())
+                p_val = int((period_input.value or "5").strip())
+                if c_val <= 0 or p_val <= 0:
+                    return
+                period_data["settings"]["cycle_days"] = c_val
+                period_data["settings"]["period_days"] = p_val
+                save_period_data(period_data)
+                close_dialog_compat(dlg)
+                refresh_current_view()
+            except ValueError:
+                pass
+
+        dlg = ft.AlertDialog(
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.SETTINGS, color=ft.Colors.PINK_400, size=20),
+                    ft.Text("生理周期设置", size=16, weight=ft.FontWeight.BOLD),
+                ],
+                spacing=6,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text("设置基础周期参数，系统将自动推算未来的月经期与排卵期：", size=12, color=ft.Colors.GREY_600),
+                        cycle_input,
+                        period_input,
+                    ],
+                    tight=True,
+                    spacing=12,
+                ),
+                width=320,
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda e: close_dialog_compat(dlg)),
+                ft.FilledButton("保存", on_click=save_settings, style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400)),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        show_dialog_compat(dlg)
+
+    def open_love_record_dialog(date_str: str):
+        """
+        弹出爱爱记录对话框：
+        严格仅提供用户指定的5个避孕选项（安全套、短效避孕药、紧急避孕药、体外射精、无措施），
+        排除节育环与皮下埋植，支持快速单选并保存至 period_data.json
+        """
+        records = period_data.setdefault("records", {})
+        day_rec = records.setdefault(date_str, {})
+        current_love = day_rec.get("love", [])
+        if isinstance(current_love, str):
+            current_love = [current_love] if current_love else []
+
+        selected_opt = current_love[0] if current_love else None
+        opt_containers = {}
+
+        def on_select_option(opt: str):
+            nonlocal selected_opt
+            selected_opt = opt if selected_opt != opt else None
+            for o, cnt in opt_containers.items():
+                is_sel = (o == selected_opt)
+                cnt.bgcolor = ft.Colors.PINK_100 if is_sel else ft.Colors.GREY_100
+                cnt.border = border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else None
+                text_ctrl = cnt.content.controls[0]
+                text_ctrl.color = ft.Colors.PINK_700 if is_sel else ft.Colors.GREY_800
+                text_ctrl.weight = ft.FontWeight.BOLD if is_sel else ft.FontWeight.NORMAL
+            dlg.update()
+
+        chip_rows = []
+        for opt in LOVE_OPTIONS:
+            is_sel = (opt == selected_opt)
+            cnt = ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Text(
+                            opt,
+                            size=13,
+                            color=ft.Colors.PINK_700 if is_sel else ft.Colors.GREY_800,
+                            weight=ft.FontWeight.BOLD if is_sel else ft.FontWeight.NORMAL,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                ),
+                padding=ft.Padding(12, 10, 12, 10),
+                border_radius=10,
+                bgcolor=ft.Colors.PINK_100 if is_sel else ft.Colors.GREY_100,
+                border=border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else None,
+                on_click=lambda e, o=opt: on_select_option(o),
+            )
+            opt_containers[opt] = cnt
+            chip_rows.append(cnt)
+
+        def save_love(e):
+            """保存选中的爱爱记录"""
+            if selected_opt:
+                day_rec["love"] = [selected_opt]
+            else:
+                if "love" in day_rec:
+                    del day_rec["love"]
+            save_period_data(period_data)
+            close_dialog_compat(dlg)
+            refresh_current_view()
+
+        def clear_love(e):
+            """清除当天爱爱记录"""
+            if "love" in day_rec:
+                del day_rec["love"]
+            save_period_data(period_data)
+            close_dialog_compat(dlg)
+            refresh_current_view()
+
+        actions = [
+            ft.TextButton("取消", on_click=lambda e: close_dialog_compat(dlg)),
+            ft.FilledButton("确定", on_click=save_love, style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400)),
+        ]
+        if current_love:
+            actions.insert(0, ft.TextButton("清除", on_click=clear_love, style=ft.ButtonStyle(color=ft.Colors.RED_400)))
+
+        dlg = ft.AlertDialog(
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.FAVORITE, color=ft.Colors.PINK_400, size=20),
+                    ft.Text(f"爱爱记录（{date_str}）", size=16, weight=ft.FontWeight.BOLD),
+                ],
+                spacing=6,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text("请选择当天避孕措施：", size=12, color=ft.Colors.GREY_600),
+                        ft.Column(controls=chip_rows, spacing=8),
+                    ],
+                    tight=True,
+                    spacing=10,
+                ),
+                width=320,
+            ),
+            actions=actions,
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        show_dialog_compat(dlg)
+
+    def open_symptom_record_dialog(date_str: str):
+        """
+        弹出症状记录对话框：
+        严格只提供图二红框内的“有哪些疼痛不适？”5个选项（头痛、眩晕、乳房胀痛、乳头痒痛、腰部酸痛），
+        支持多选并保存至 period_data.json
+        """
+        records = period_data.setdefault("records", {})
+        day_rec = records.setdefault(date_str, {})
+        current_symptoms = list(day_rec.get("symptoms", []))
+        selected_set = set(current_symptoms)
+        symptom_containers = {}
+
+        def toggle_symptom(opt: str):
+            if opt in selected_set:
+                selected_set.remove(opt)
+            else:
+                selected_set.add(opt)
+            for o, cnt in symptom_containers.items():
+                is_sel = (o in selected_set)
+                cnt.bgcolor = ft.Colors.PINK_50 if is_sel else ft.Colors.GREY_100
+                cnt.border = border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else None
+                text_ctrl = cnt.content.controls[0]
+                check_icon = cnt.content.controls[1]
+                text_ctrl.color = ft.Colors.PINK_700 if is_sel else ft.Colors.GREY_800
+                text_ctrl.weight = ft.FontWeight.BOLD if is_sel else ft.FontWeight.NORMAL
+                check_icon.visible = is_sel
+            dlg.update()
+
+        symptom_rows = []
+        for opt in SYMPTOM_OPTIONS:
+            is_sel = (opt in selected_set)
+            cnt = ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Text(
+                            opt,
+                            size=13,
+                            color=ft.Colors.PINK_700 if is_sel else ft.Colors.GREY_800,
+                            weight=ft.FontWeight.BOLD if is_sel else ft.FontWeight.NORMAL,
+                        ),
+                        ft.Icon(
+                            ft.Icons.CHECK_CIRCLE,
+                            color=ft.Colors.PINK_400,
+                            size=18,
+                            visible=is_sel,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+                padding=ft.Padding(14, 10, 14, 10),
+                border_radius=10,
+                bgcolor=ft.Colors.PINK_50 if is_sel else ft.Colors.GREY_100,
+                border=border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else None,
+                on_click=lambda e, o=opt: toggle_symptom(o),
+            )
+            symptom_containers[opt] = cnt
+            symptom_rows.append(cnt)
+
+        def save_symptoms(e):
+            """保存选中的身体症状记录"""
+            if selected_set:
+                day_rec["symptoms"] = list(selected_set)
+            else:
+                if "symptoms" in day_rec:
+                    del day_rec["symptoms"]
+            save_period_data(period_data)
+            close_dialog_compat(dlg)
+            refresh_current_view()
+
+        def clear_symptoms(e):
+            """清除当天症状记录"""
+            if "symptoms" in day_rec:
+                del day_rec["symptoms"]
+            save_period_data(period_data)
+            close_dialog_compat(dlg)
+            refresh_current_view()
+
+        actions = [
+            ft.TextButton("取消", on_click=lambda e: close_dialog_compat(dlg)),
+            ft.FilledButton("确定", on_click=save_symptoms, style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400)),
+        ]
+        if current_symptoms:
+            actions.insert(0, ft.TextButton("清除", on_click=clear_symptoms, style=ft.ButtonStyle(color=ft.Colors.RED_400)))
+
+        dlg = ft.AlertDialog(
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.SPA_ROUNDED, color=ft.Colors.PINK_400, size=20),
+                    ft.Text(f"症状记录（{date_str}）", size=16, weight=ft.FontWeight.BOLD),
+                ],
+                spacing=6,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text("有哪些疼痛不适？（可多选）", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_800),
+                        ft.Column(controls=symptom_rows, spacing=8),
+                    ],
+                    tight=True,
+                    spacing=10,
+                ),
+                width=320,
+            ),
+            actions=actions,
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        show_dialog_compat(dlg)
+
+    def toggle_period_status(date_str: str, start: bool):
+        """
+        快捷切换指定日期的经期状态：
+        start=True: 标记为经期开始，默认向后标记 period_days 天为经期；
+        start=False: 标记为经期结束，将当天及后续连续经期标记解除；
+        更新后立即持久化保存并刷新生理期日历与预测。
+        """
+        records = period_data.setdefault("records", {})
+        settings = period_data.get("settings", {})
+        p_days = int(settings.get("period_days", 5))
+        base_date = datetime.date.fromisoformat(date_str)
+
+        if start:
+            for offset in range(p_days):
+                cur_d_str = (base_date + datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
+                rec = records.setdefault(cur_d_str, {})
+                rec["is_period"] = True
+        else:
+            if date_str in records:
+                records[date_str]["is_period"] = False
+            for offset in range(1, 15):
+                chk_str = (base_date + datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
+                if chk_str in records and records[chk_str].get("is_period"):
+                    records[chk_str]["is_period"] = False
+                else:
+                    break
+
+        save_period_data(period_data)
+        refresh_current_view()
 
     def on_cell_click(d: str):
         """
@@ -1259,7 +1750,473 @@ def main(page: ft.Page):
             expand=True,
         )
 
-    # ---------------- 视图构建：Tab 2 趋势分析视图 ----------------
+    # ---------------- 视图构建：Tab 2 生理期视图（完全参考图二风格） ----------------
+    def change_period_month(delta: int):
+        """生理期视图切换月份并自动对齐当前选中日期"""
+        nonlocal period_current_year, period_current_month, period_selected_date_str
+        period_current_month += delta
+        if period_current_month > 12:
+            period_current_month = 1
+            period_current_year += 1
+        elif period_current_month < 1:
+            period_current_month = 12
+            period_current_year -= 1
+        if period_current_year == now.year and period_current_month == now.month:
+            period_selected_date_str = today_str
+        else:
+            period_selected_date_str = f"{period_current_year:04d}-{period_current_month:02d}-01"
+        refresh_current_view()
+
+    def jump_period_to_today():
+        """生理期视图快速返回今天所在的年月并选中今天"""
+        nonlocal period_current_year, period_current_month, period_selected_date_str
+        period_current_year = now.year
+        period_current_month = now.month
+        period_selected_date_str = today_str
+        refresh_current_view()
+
+    def on_period_cell_click(d: str):
+        """生理期日历单元格点击事件响应：切换当前聚焦选中的日期"""
+        nonlocal period_selected_date_str
+        period_selected_date_str = d
+        refresh_current_view()
+
+    def build_period_calendar(year: int, month: int, predictions: dict):
+        """
+        生成符合图二视觉体验的生理期月度日历网格：
+        1. 表头按周日~周六排序（周日为第一列）；
+        2. 实际经期以实心粉红圆底呈现；
+        3. 预测经期以浅粉色圆底与粉色边框呈现；
+        4. 排卵日以深紫边框圆底强化呈现，排卵期以浅紫圆底呈现；
+        5. 今天默认以浅青色圆底标识并带‘今’；
+        6. 下方展示爱爱与症状小图标标记；
+        7. 点击日期可在下方联动切换经期状态与记录卡片。
+        """
+        cal = calendar.Calendar(firstweekday=6)
+        month_matrix = cal.monthdayscalendar(year, month)
+        weekday_headers = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+
+        # 星期标题栏
+        header_row = ft.Row(
+            controls=[
+                ft.Container(
+                    content=ft.Text(
+                        w,
+                        weight=ft.FontWeight.W_500,
+                        size=12,
+                        color=ft.Colors.GREY_500
+                    ),
+                    alignment=ALIGN_CENTER,
+                    expand=1,
+                    height=28,
+                )
+                for w in weekday_headers
+            ],
+            spacing=3
+        )
+
+        calendar_rows = [header_row]
+
+        actual_dates = predictions.get("actual_period_dates", set())
+        pred_period_dates = predictions.get("pred_period_dates", set())
+        pred_ovulation_dates = predictions.get("pred_ovulation_dates", set())
+        pred_ovulation_main_dates = predictions.get("pred_ovulation_main_dates", set())
+        period_records = period_data.get("records", {})
+
+        for week in month_matrix:
+            cols = []
+            for day in week:
+                if day == 0:
+                    cols.append(ft.Container(expand=1, height=54))
+                else:
+                    date_key = f"{year:04d}-{month:02d}-{day:02d}"
+                    is_today = (date_key == today_str)
+                    is_selected = (date_key == period_selected_date_str)
+                    is_actual = (date_key in actual_dates)
+                    is_pred = (date_key in pred_period_dates)
+                    is_ovulation_main = (date_key in pred_ovulation_main_dates)
+                    is_ovulation = (date_key in pred_ovulation_dates)
+
+                    rec = period_records.get(date_key, {})
+                    has_love = bool(rec.get("love"))
+                    has_symptoms = bool(rec.get("symptoms"))
+
+                    # 圆圈样式与色彩判断
+                    circle_border = None
+                    if is_actual:
+                        # 实心粉红（实际经期）
+                        circle_bgcolor = ft.Colors.PINK_400
+                        circle_border = None
+                        num_color = ft.Colors.WHITE
+                        num_weight = ft.FontWeight.BOLD
+                    elif is_pred:
+                        # 浅粉色圈（预测经期）
+                        circle_bgcolor = ft.Colors.PINK_50
+                        circle_border = border_all(1.5, ft.Colors.PINK_200) if border_all else None
+                        num_color = ft.Colors.PINK_400
+                        num_weight = ft.FontWeight.BOLD
+                    elif is_ovulation_main:
+                        # 深紫强化圈（排卵日）
+                        circle_bgcolor = ft.Colors.PURPLE_50
+                        circle_border = border_all(2.0, ft.Colors.PURPLE_300) if border_all else None
+                        num_color = ft.Colors.PURPLE_600
+                        num_weight = ft.FontWeight.BOLD
+                    elif is_ovulation:
+                        # 浅紫圈（排卵期）
+                        circle_bgcolor = ft.Colors.PURPLE_50
+                        circle_border = border_all(1.2, ft.Colors.PURPLE_100) if border_all else None
+                        num_color = ft.Colors.PURPLE_400
+                        num_weight = ft.FontWeight.BOLD
+                    elif is_today:
+                        # 今天默认浅青色圈
+                        circle_bgcolor = ft.Colors.CYAN_50
+                        circle_border = border_all(1.5, ft.Colors.CYAN_300) if border_all else None
+                        num_color = ft.Colors.CYAN_800
+                        num_weight = ft.FontWeight.BOLD
+                    elif is_selected:
+                        # 选中且无特殊状态时，使用柔和淡粉圈标识
+                        circle_bgcolor = ft.Colors.PINK_50
+                        circle_border = border_all(1.5, ft.Colors.PINK_300) if border_all else None
+                        num_color = ft.Colors.PINK_700
+                        num_weight = ft.FontWeight.BOLD
+                    else:
+                        circle_bgcolor = ft.Colors.TRANSPARENT
+                        circle_border = None
+                        num_color = ft.Colors.GREY_900
+                        num_weight = ft.FontWeight.NORMAL
+
+                    num_text = "今" if (is_today and not is_actual and not is_pred and not is_ovulation) else str(day)
+
+                    # 身体记录小徽标（爱爱标💗，症状标🍵）
+                    dot_controls = []
+                    if has_love:
+                        dot_controls.append(ft.Icon(ft.Icons.FAVORITE, size=7, color=ft.Colors.PINK_400))
+                    if has_symptoms:
+                        dot_controls.append(ft.Icon(ft.Icons.SPA_ROUNDED, size=7, color=ft.Colors.AMBER_700))
+
+                    circle_content_list = [
+                        ft.Text(num_text, size=13, weight=num_weight, color=num_color)
+                    ]
+                    if dot_controls:
+                        circle_content_list.append(
+                            ft.Row(controls=dot_controls, alignment=ft.MainAxisAlignment.CENTER, spacing=2)
+                        )
+
+                    circle_widget = ft.Container(
+                        content=ft.Column(
+                            controls=circle_content_list,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=1,
+                        ),
+                        width=38,
+                        height=38,
+                        border_radius=19,
+                        bgcolor=circle_bgcolor,
+                        border=circle_border,
+                        alignment=ALIGN_CENTER,
+                    )
+
+                    # 单元格容器：无外部方形蓝色边框，保持纯圆形视觉
+                    cell = ft.Container(
+                        content=circle_widget,
+                        expand=1,
+                        height=54,
+                        alignment=ALIGN_CENTER,
+                        border_radius=10,
+                        border=None,
+                        on_click=lambda e, d=date_key: on_period_cell_click(d),
+                    )
+                    cols.append(cell)
+            calendar_rows.append(ft.Row(controls=cols, spacing=3))
+
+        return ft.Container(
+            content=ft.Column(controls=calendar_rows, spacing=4),
+            bgcolor=ft.Colors.WHITE,
+            padding=ft.Padding(8, 10, 8, 10),
+            border=border_all(1, ft.Colors.GREY_200) if border_all else None,
+            border_radius=14,
+        )
+
+    def build_period_view():
+        """
+        组装移动端【生理期】页面内容（严格按照图二红框内的三个模块）：
+        1. 顶部月份切换与周期参数设置；
+        2. 红框一：周期日历与图例（经期、预测经期、排卵期）及生理状态提示；
+        3. 红框二：经期快捷确认卡片（“经期开始了吗？” 或 “经期正在进行中”）；
+        4. 红框三：身体记录项（仅包含 💗 爱爱 与 🍵 症状）。
+        """
+        predictions = calculate_period_predictions(period_data)
+        is_cur_month = (period_current_year == now.year and period_current_month == now.month)
+
+        # 1. 顶部月份导航与周期设置按钮
+        month_nav_row = ft.Row(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.IconButton(
+                            icon=ft.Icons.CHEVRON_LEFT,
+                            icon_color=ft.Colors.GREY_700,
+                            tooltip="上一月",
+                            on_click=lambda e: change_period_month(-1),
+                        ),
+                        ft.Text(
+                            f"{period_current_year} 年 {period_current_month:02d} 月",
+                            size=16,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.GREY_900,
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.CHEVRON_RIGHT,
+                            icon_color=ft.Colors.GREY_700,
+                            tooltip="下一月",
+                            on_click=lambda e: change_period_month(1),
+                        ),
+                        ft.TextButton(
+                            "今",
+                            on_click=lambda e: jump_period_to_today(),
+                            visible=not is_cur_month,
+                            style=ft.ButtonStyle(
+                                color=ft.Colors.PINK_400,
+                                padding=ft.Padding(6, 2, 6, 2),
+                            ),
+                        ),
+                    ],
+                    spacing=2,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.SETTINGS_OUTLINED,
+                    tooltip="设置周期天数与经期天数",
+                    icon_color=ft.Colors.PINK_400,
+                    on_click=lambda e: open_period_settings_dialog(),
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
+        # 2. 图例与阶段提示栏
+        legend_row = ft.Row(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Container(width=10, height=10, border_radius=5, bgcolor=ft.Colors.PINK_400),
+                        ft.Text("经期", size=11, color=ft.Colors.GREY_700),
+                    ],
+                    spacing=4,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=10,
+                            height=10,
+                            border_radius=5,
+                            bgcolor=ft.Colors.PINK_50,
+                            border=border_all(1, ft.Colors.PINK_200) if border_all else None
+                        ),
+                        ft.Text("预测经期", size=11, color=ft.Colors.GREY_700),
+                    ],
+                    spacing=4,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Container(
+                            width=10,
+                            height=10,
+                            border_radius=5,
+                            bgcolor=ft.Colors.PURPLE_50,
+                            border=border_all(1, ft.Colors.PURPLE_200) if border_all else None
+                        ),
+                        ft.Text("排卵期", size=11, color=ft.Colors.GREY_700),
+                    ],
+                    spacing=4,
+                ),
+            ],
+            spacing=16,
+        )
+
+        # 计算当前聚焦日期的阶段
+        phase_text = get_day_physiological_phase(period_selected_date_str, predictions)
+        is_sel_today = (period_selected_date_str == today_str)
+        date_prefix = "今日" if is_sel_today else period_selected_date_str
+
+        phase_row = ft.Row(
+            controls=[
+                ft.Text("记经期", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.PINK_400),
+                ft.Text(f"推算{date_prefix}处于：{phase_text}", size=12, color=ft.Colors.GREY_700),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
+        calendar_card = ft.Container(
+            content=ft.Column(
+                controls=[
+                    build_period_calendar(period_current_year, period_current_month, predictions),
+                    ft.Container(height=4),
+                    legend_row,
+                    ft.Divider(height=10, color=ft.Colors.GREY_100),
+                    phase_row,
+                ],
+                spacing=6,
+            ),
+            bgcolor=ft.Colors.WHITE,
+            padding=ft.Padding(12, 12, 12, 12),
+            border_radius=14,
+            border=border_all(1, ft.Colors.GREY_200) if border_all else None,
+        )
+
+        # 3. 红框二：经期快捷确认卡片
+        actual_dates = predictions.get("actual_period_dates", set())
+        is_date_period = (period_selected_date_str in actual_dates)
+
+        if is_date_period:
+            period_status_card = ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text(f"{period_selected_date_str} 经期正在进行中", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_900),
+                        ft.Row(
+                            controls=[
+                                ft.OutlinedButton(
+                                    "结束了",
+                                    style=ft.ButtonStyle(
+                                        color=ft.Colors.PINK_500,
+                                        side=ft.BorderSide(1, ft.Colors.PINK_300),
+                                    ),
+                                    on_click=lambda e: toggle_period_status(period_selected_date_str, start=False),
+                                ),
+                                ft.FilledButton(
+                                    "还在继续",
+                                    style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400),
+                                    on_click=lambda e: None,
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=20,
+                        ),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
+                ),
+                bgcolor=ft.Colors.WHITE,
+                padding=ft.Padding(16, 14, 16, 14),
+                border_radius=12,
+                border=border_all(1, ft.Colors.PINK_200) if border_all else None,
+            )
+        else:
+            period_status_card = ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text(f"{period_selected_date_str} 经期开始了吗？", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_900),
+                        ft.Row(
+                            controls=[
+                                ft.OutlinedButton(
+                                    "还没有",
+                                    style=ft.ButtonStyle(
+                                        color=ft.Colors.GREY_700,
+                                        side=ft.BorderSide(1, ft.Colors.GREY_300),
+                                    ),
+                                    on_click=lambda e: None,
+                                ),
+                                ft.FilledButton(
+                                    "开始了",
+                                    style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400),
+                                    on_click=lambda e: toggle_period_status(period_selected_date_str, start=True),
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=20,
+                        ),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
+                ),
+                bgcolor=ft.Colors.WHITE,
+                padding=ft.Padding(16, 14, 16, 14),
+                border_radius=12,
+                border=border_all(1, ft.Colors.GREY_200) if border_all else None,
+            )
+
+        # 4. 红框三：身体记录项（仅保留 爱爱 与 症状）
+        period_records = period_data.get("records", {})
+        sel_rec = period_records.get(period_selected_date_str, {})
+        love_list = sel_rec.get("love", [])
+        symptom_list = sel_rec.get("symptoms", [])
+
+        love_display = " · ".join(love_list) if love_list else "未记录"
+        symptom_display = " · ".join(symptom_list) if symptom_list else "未记录"
+
+        love_row = ft.Row(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.FAVORITE, color=ft.Colors.PINK_400, size=20),
+                        ft.Text("爱爱", size=14, weight=ft.FontWeight.W_500),
+                        ft.Text(f"({love_display})", size=12, color=ft.Colors.PINK_600 if love_list else ft.Colors.GREY_400),
+                    ],
+                    spacing=8,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.CHECK_CIRCLE if love_list else ft.Icons.ADD_CIRCLE_OUTLINE,
+                    icon_color=ft.Colors.PINK_400,
+                    icon_size=20,
+                    tooltip="记录爱爱",
+                    on_click=lambda e: open_love_record_dialog(period_selected_date_str),
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
+        symptom_row = ft.Row(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.SPA_ROUNDED, color=ft.Colors.PINK_400, size=20),
+                        ft.Text("症状", size=14, weight=ft.FontWeight.W_500),
+                        ft.Text(f"({symptom_display})", size=12, color=ft.Colors.PINK_600 if symptom_list else ft.Colors.GREY_400, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ],
+                    spacing=8,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.CHECK_CIRCLE if symptom_list else ft.Icons.ADD_CIRCLE_OUTLINE,
+                    icon_color=ft.Colors.PINK_400,
+                    icon_size=20,
+                    tooltip="记录症状",
+                    on_click=lambda e: open_symptom_record_dialog(period_selected_date_str),
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
+        body_records_card = ft.Container(
+            content=ft.Column(
+                controls=[
+                    love_row,
+                    ft.Divider(height=1, color=ft.Colors.GREY_100),
+                    symptom_row,
+                ],
+                spacing=8,
+            ),
+            bgcolor=ft.Colors.WHITE,
+            padding=ft.Padding(16, 12, 16, 12),
+            border_radius=12,
+            border=border_all(1, ft.Colors.GREY_200) if border_all else None,
+        )
+
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    month_nav_row,
+                    calendar_card,
+                    period_status_card,
+                    body_records_card,
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            padding=ft.Padding(12, 8, 12, 16),
+            expand=True,
+        )
+
+    # ---------------- 视图构建：Tab 3 趋势分析视图 ----------------
     def set_chart_filter(limit: int):
         """切换折线图查看时间范围"""
         nonlocal chart_range_limit
@@ -1488,45 +2445,55 @@ def main(page: ft.Page):
 
     # ---------------- 核心导航与刷新控制 ----------------
     appbar_title = ft.Text("日历打卡", size=17, weight=ft.FontWeight.BOLD)
+    backup_action_btn = ft.IconButton(
+        icon=ft.Icons.BACKUP_OUTLINED,
+        tooltip="数据备份与恢复",
+        icon_color=ft.Colors.BLUE_600,
+        on_click=lambda e: open_backup_restore_dialog(),
+    )
+    period_settings_action_btn = ft.IconButton(
+        icon=ft.Icons.SETTINGS_OUTLINED,
+        tooltip="周期参数设置",
+        icon_color=ft.Colors.PINK_400,
+        on_click=lambda e: open_period_settings_dialog(),
+    )
+
     page.appbar = ft.AppBar(
         title=appbar_title,
         center_title=True,
         bgcolor=ft.Colors.WHITE,
         elevation=0.5,
-        actions=[
-            ft.IconButton(
-                icon=ft.Icons.BACKUP_OUTLINED,
-                tooltip="数据备份与恢复",
-                icon_color=ft.Colors.BLUE_600,
-                on_click=lambda e: open_backup_restore_dialog(),
-            )
-        ],
+        actions=[backup_action_btn],
     )
 
     main_view_container = ft.Container(content=build_calendar_view(), expand=True)
 
     def refresh_current_view():
-        """刷新当前激活 Tab 的视图展示"""
+        """刷新当前激活 Tab 的视图展示，并同步更新 AppBar 标题与操作按钮"""
         if current_tab_index == 0:
+            appbar_title.value = "日历打卡"
+            page.appbar.actions = [backup_action_btn]
             main_view_container.content = build_calendar_view()
-        else:
+        elif current_tab_index == 1:
+            appbar_title.value = "趋势分析"
+            page.appbar.actions = []
             main_view_container.content = build_chart_view()
+        else:
+            appbar_title.value = "生理期管理"
+            page.appbar.actions = [period_settings_action_btn]
+            main_view_container.content = build_period_view()
         page.update()
 
     # 注册在线节假日数据更新监听器：网络同步成功后静默自动刷新当前日历
     holiday_update_listeners.append(refresh_current_view)
 
     def handle_nav_change(e):
-        """处理底部导航栏点击切换逻辑"""
+        """处理底部导航栏点击切换逻辑（0:日历打卡, 1:趋势分析, 2:生理期）"""
         nonlocal current_tab_index
         current_tab_index = e.control.selected_index
-        if current_tab_index == 0:
-            appbar_title.value = "日历打卡"
-        else:
-            appbar_title.value = "趋势分析"
         refresh_current_view()
 
-    # 底部导航栏：日历打卡与趋势分析
+    # 底部导航栏：日历打卡、趋势分析、生理期（放置在第三个）
     page.navigation_bar = ft.NavigationBar(
         selected_index=0,
         destinations=[
@@ -1539,6 +2506,11 @@ def main(page: ft.Page):
                 icon=ft.Icons.SHOW_CHART_OUTLINED,
                 selected_icon=ft.Icons.SHOW_CHART,
                 label="趋势分析",
+            ),
+            ft.NavigationBarDestination(
+                icon=ft.Icons.FAVORITE_BORDER,
+                selected_icon=ft.Icons.FAVORITE,
+                label="生理期",
             ),
         ],
         on_change=handle_nav_change,
