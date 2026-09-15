@@ -835,12 +835,22 @@ def main(page: ft.Page):
         show_dialog_compat(dlg)
 
     def open_backup_restore_dialog():
-        """弹出数据备份与恢复对话框，支持一键复制导出 JSON 与粘贴导入恢复"""
-        json_str = json.dumps(records, ensure_ascii=False, indent=2)
+        """
+        弹出数据备份与恢复对话框：
+        支持一键复制导出全量 JSON（同时包含体重打卡数据与生理期经期/爱爱/症状数据），
+        并在导入恢复时同时解析体重与生理期数据，自动百分百向下兼容历史纯数字或旧版备份格式。
+        """
+        # 打包全量备份数据（包含体重打卡记录与生理期数据）
+        full_backup_data = {
+            "version": 2,
+            "weight_records": records,
+            "period_data": period_data,
+        }
+        json_str = json.dumps(full_backup_data, ensure_ascii=False, indent=2)
         backup_display = ft.TextField(
             value=json_str,
             read_only=True,
-            label="当前备份 JSON 数据（可长按全选复制）",
+            label="当前全量备份 JSON 数据（包含体重与经期，可长按全选复制）",
             multiline=True,
             min_lines=2,
             max_lines=4,
@@ -848,7 +858,7 @@ def main(page: ft.Page):
         )
         restore_input = ft.TextField(
             label="粘贴备份 JSON 数据",
-            hint_text='例如: {"2026-09-09": 60}',
+            hint_text='粘贴导出的 JSON 数据后点击下方恢复',
             multiline=True,
             min_lines=2,
             max_lines=4,
@@ -904,10 +914,11 @@ def main(page: ft.Page):
             return False
 
         def copy_backup(e):
-            """执行备份数据复制"""
+            """执行备份数据复制：提示已包含体重与生理期记录数"""
             success = set_clipboard_compat(json_str)
+            period_rec_count = len(period_data.get("records", {}))
             if success:
-                status_text.value = f"已复制到剪贴板！共 {len(records)} 条打卡记录，可发到微信保存。"
+                status_text.value = f"已复制到剪贴板！共包含 {len(records)} 条体重打卡与 {period_rec_count} 条生理期记录，可发到微信保存。"
                 status_text.color = ft.Colors.GREEN_700
             else:
                 status_text.value = "已生成上方数据框，您可直接在上方框中长按全选并复制！"
@@ -915,7 +926,11 @@ def main(page: ft.Page):
             page.update()
 
         def do_restore(e):
-            """解析并恢复导入的用户体重数据"""
+            """
+            解析并恢复导入的用户打卡与生理期数据：
+            1. 若为包含 weight_records 与 period_data 的新版全量备份，同时恢复两份数据；
+            2. 若为历史旧版本的纯体重数据字典，依然向下兼容完整恢复体重记录。
+            """
             raw = (restore_input.value or "").strip()
             if not raw:
                 status_text.value = "请先粘贴备份的 JSON 数据！"
@@ -926,19 +941,62 @@ def main(page: ft.Page):
                 data = json.loads(raw)
                 if not isinstance(data, dict):
                     raise ValueError("数据格式错误，需为字典键值对")
-                valid_count = 0
-                for k, v in data.items():
-                    datetime.date.fromisoformat(k)
-                    if isinstance(v, (int, float)):
-                        records[k] = {"weight": float(v), "diet": "", "note": ""}
-                    elif isinstance(v, dict):
-                        records[k] = {
-                            "weight": get_weight(v),
-                            "diet": get_diet(v),
-                            "note": get_note(v),
-                        }
-                    valid_count += 1
-                save_data(records)
+
+                valid_w_count = 0
+                valid_p_count = 0
+
+                # 判断是否包含全量备份键
+                if "weight_records" in data or "period_data" in data:
+                    # 1. 解析恢复体重记录
+                    w_recs = data.get("weight_records", {})
+                    if isinstance(w_recs, dict):
+                        for k, v in w_recs.items():
+                            try:
+                                datetime.date.fromisoformat(k)
+                            except ValueError:
+                                continue
+                            if isinstance(v, (int, float)):
+                                records[k] = {"weight": float(v), "diet": "", "note": ""}
+                            elif isinstance(v, dict):
+                                records[k] = {
+                                    "weight": get_weight(v),
+                                    "diet": get_diet(v),
+                                    "note": get_note(v),
+                                }
+                            valid_w_count += 1
+                        save_data(records)
+
+                    # 2. 解析恢复生理期记录与周期设置
+                    p_info = data.get("period_data", {})
+                    if isinstance(p_info, dict):
+                        if "settings" in p_info and isinstance(p_info["settings"], dict):
+                            period_data["settings"] = p_info["settings"]
+                        if "records" in p_info and isinstance(p_info["records"], dict):
+                            p_recs = period_data.setdefault("records", {})
+                            for pk, pv in p_info["records"].items():
+                                try:
+                                    datetime.date.fromisoformat(pk)
+                                except ValueError:
+                                    continue
+                                if isinstance(pv, dict):
+                                    p_recs[pk] = pv
+                                    valid_p_count += 1
+                        save_period_data(period_data)
+                else:
+                    # 历史旧格式兼容恢复（纯日期->体重）
+                    for k, v in data.items():
+                        datetime.date.fromisoformat(k)
+                        if isinstance(v, (int, float)):
+                            records[k] = {"weight": float(v), "diet": "", "note": ""}
+                        elif isinstance(v, dict):
+                            records[k] = {
+                                "weight": get_weight(v),
+                                "diet": get_diet(v),
+                                "note": get_note(v),
+                            }
+                        valid_w_count += 1
+                    save_data(records)
+
                 close_dialog_compat(dlg)
                 refresh_current_view()
             except Exception as ex:
@@ -982,8 +1040,38 @@ def main(page: ft.Page):
         show_dialog_compat(dlg)
 
     # ---------------- 生理期专属业务弹窗与状态控制 ----------------
-    # 严格按照用户指定的爱爱选项（已剔除节育环、皮下埋植）
-    LOVE_OPTIONS = ["安全套", "短效避孕药", "紧急避孕药", "体外射精", "无措施"]
+    def normalize_love_records(raw_love) -> list:
+        """
+        标准化爱爱打卡记录数据结构：
+        自动向下兼容历史单选或纯字符串格式（如 ["无措施"]），
+        统一解析为包含 time 与 type 的字典列表：[{"time": "22:56", "type": "无措施"}]
+        """
+        if not raw_love:
+            return []
+        if isinstance(raw_love, str):
+            return [{"time": "", "type": raw_love}]
+        if isinstance(raw_love, dict):
+            return [raw_love]
+        res = []
+        if isinstance(raw_love, list):
+            for item in raw_love:
+                if isinstance(item, str):
+                    res.append({"time": "", "type": item})
+                elif isinstance(item, dict):
+                    res.append({
+                        "time": str(item.get("time") or "").strip(),
+                        "type": str(item.get("type") or "").strip(),
+                    })
+        return res
+
+    # 严格按照用户明确要求配置选项图标：安全套用小雨伞，无措施用爱心
+    LOVE_OPTIONS_CONFIG = [
+        {"name": "安全套", "icon": ft.Icons.UMBRELLA_OUTLINED, "selected_icon": ft.Icons.UMBRELLA},
+        {"name": "短效避孕药", "icon": ft.Icons.MEDICATION_OUTLINED, "selected_icon": ft.Icons.MEDICATION},
+        {"name": "紧急避孕药", "icon": ft.Icons.ADD_BOX_OUTLINED, "selected_icon": ft.Icons.ADD_BOX},
+        {"name": "体外射精", "icon": ft.Icons.BOLT_OUTLINED, "selected_icon": ft.Icons.BOLT},
+        {"name": "无措施", "icon": ft.Icons.FAVORITE_BORDER, "selected_icon": ft.Icons.FAVORITE},
+    ]
     # 严格按照用户指定的症状选项（图二红框内的“有哪些疼痛不适”5项）
     SYMPTOM_OPTIONS = ["头痛", "眩晕", "乳房胀痛", "乳头痒痛", "腰部酸痛"]
 
@@ -1054,80 +1142,177 @@ def main(page: ft.Page):
 
     def open_love_record_dialog(date_str: str):
         """
-        弹出爱爱记录对话框：
-        严格仅提供用户指定的5个避孕选项（安全套、短效避孕药、紧急避孕药、体外射精、无措施），
-        排除节育环与皮下埋植，支持快速单选并保存至 period_data.json
+        弹出爱爱记录对话框（支持精准记录具体时间与区分图标选择）：
+        1. 支持展示当天已有打卡记录，并可对单条记录进行快捷删除或全部清除；
+        2. 支持自定义修改或默认填充打卡时间（如 22:56）；
+        3. 严格提供指定的 5 种区分图标选项（安全套、短效避孕药、紧急避孕药、体外射精、无措施）；
+        4. 保存后以包含 time 与 type 的规范数据持久化至 period_data.json。
         """
         records = period_data.setdefault("records", {})
         day_rec = records.setdefault(date_str, {})
-        current_love = day_rec.get("love", [])
-        if isinstance(current_love, str):
-            current_love = [current_love] if current_love else []
+        current_list = normalize_love_records(day_rec.get("love", []))
 
-        selected_opt = current_love[0] if current_love else None
+        # 默认选中第一条记录的类型，或默认“无措施”
+        selected_opt = current_list[-1].get("type", "无措施") if current_list else "无措施"
+        current_time_str = datetime.datetime.now().strftime("%H:%M")
+
+        time_input = ft.TextField(
+            value=current_time_str,
+            label="打卡时间",
+            hint_text="例如: 22:56",
+            width=130,
+            text_size=13,
+            dense=True,
+        )
+
         opt_containers = {}
 
-        def on_select_option(opt: str):
+        def on_select_option(opt_name: str):
             nonlocal selected_opt
-            selected_opt = opt if selected_opt != opt else None
-            for o, cnt in opt_containers.items():
-                is_sel = (o == selected_opt)
-                cnt.bgcolor = ft.Colors.PINK_100 if is_sel else ft.Colors.GREY_100
-                cnt.border = border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else None
-                text_ctrl = cnt.content.controls[0]
+            selected_opt = opt_name
+            for o_name, cnt in opt_containers.items():
+                is_sel = (o_name == selected_opt)
+                cnt.bgcolor = ft.Colors.PINK_100 if is_sel else ft.Colors.GREY_50
+                cnt.border = border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else (border_all(1, ft.Colors.GREY_200) if border_all else None)
+                icon_ctrl = cnt.content.controls[0]
+                text_ctrl = cnt.content.controls[1]
+                icon_ctrl.color = ft.Colors.PINK_600 if is_sel else ft.Colors.GREY_600
                 text_ctrl.color = ft.Colors.PINK_700 if is_sel else ft.Colors.GREY_800
                 text_ctrl.weight = ft.FontWeight.BOLD if is_sel else ft.FontWeight.NORMAL
             dlg.update()
 
-        chip_rows = []
-        for opt in LOVE_OPTIONS:
-            is_sel = (opt == selected_opt)
+        # 5 个带有专属图标的区分选项
+        option_widgets = []
+        for opt in LOVE_OPTIONS_CONFIG:
+            o_name = opt["name"]
+            is_sel = (o_name == selected_opt)
             cnt = ft.Container(
                 content=ft.Row(
                     controls=[
+                        ft.Icon(
+                            opt["selected_icon"] if is_sel else opt["icon"],
+                            size=18,
+                            color=ft.Colors.PINK_600 if is_sel else ft.Colors.GREY_600,
+                        ),
                         ft.Text(
-                            opt,
+                            o_name,
                             size=13,
                             color=ft.Colors.PINK_700 if is_sel else ft.Colors.GREY_800,
                             weight=ft.FontWeight.BOLD if is_sel else ft.FontWeight.NORMAL,
                         ),
                     ],
-                    alignment=ft.MainAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.START,
+                    spacing=12,
                 ),
-                padding=ft.Padding(12, 10, 12, 10),
+                padding=ft.Padding(14, 10, 14, 10),
                 border_radius=10,
-                bgcolor=ft.Colors.PINK_100 if is_sel else ft.Colors.GREY_100,
-                border=border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else None,
-                on_click=lambda e, o=opt: on_select_option(o),
+                bgcolor=ft.Colors.PINK_100 if is_sel else ft.Colors.GREY_50,
+                border=border_all(1.5, ft.Colors.PINK_400) if (is_sel and border_all) else (border_all(1, ft.Colors.GREY_200) if border_all else None),
+                on_click=lambda e, name=o_name: on_select_option(name),
             )
-            opt_containers[opt] = cnt
-            chip_rows.append(cnt)
+            opt_containers[o_name] = cnt
+            option_widgets.append(cnt)
+
+        # 已有记录展示列
+        existing_items_col = ft.Column(spacing=4)
+
+        def render_existing_items():
+            existing_items_col.controls.clear()
+            if current_list:
+                for idx, item in enumerate(current_list):
+                    t_val = item.get("time", "")
+                    typ_val = item.get("type", "")
+                    def make_del_handler(index_to_del):
+                        def handler(e):
+                            if 0 <= index_to_del < len(current_list):
+                                current_list.pop(index_to_del)
+                                if current_list:
+                                    day_rec["love"] = current_list
+                                else:
+                                    day_rec.pop("love", None)
+                                save_period_data(period_data)
+                                render_existing_items()
+                                dlg.update()
+                                refresh_current_view()
+                        return handler
+
+                    existing_items_col.controls.append(
+                        ft.Container(
+                            content=ft.Row(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            ft.Icon(ft.Icons.ACCESS_TIME, size=14, color=ft.Colors.PINK_400),
+                                            ft.Text(f"{t_val}  {typ_val}", size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_800),
+                                        ],
+                                        spacing=6,
+                                    ),
+                                    ft.IconButton(
+                                        icon=ft.Icons.CLOSE,
+                                        icon_size=14,
+                                        tooltip="删除此条",
+                                        icon_color=ft.Colors.RED_400,
+                                        on_click=make_del_handler(idx),
+                                    ),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            bgcolor=ft.Colors.PINK_50,
+                            padding=ft.Padding(10, 2, 6, 2),
+                            border_radius=8,
+                        )
+                    )
+
+        render_existing_items()
 
         def save_love(e):
-            """保存选中的爱爱记录"""
-            if selected_opt:
-                day_rec["love"] = [selected_opt]
-            else:
-                if "love" in day_rec:
-                    del day_rec["love"]
+            """保存新增包含时间与选项的爱爱记录"""
+            t_str = (time_input.value or "").strip()
+            if not t_str:
+                t_str = datetime.datetime.now().strftime("%H:%M")
+            current_list.append({"time": t_str, "type": selected_opt})
+            day_rec["love"] = current_list
             save_period_data(period_data)
             close_dialog_compat(dlg)
             refresh_current_view()
 
         def clear_love(e):
-            """清除当天爱爱记录"""
+            """清除当天全部爱爱记录"""
             if "love" in day_rec:
                 del day_rec["love"]
             save_period_data(period_data)
             close_dialog_compat(dlg)
             refresh_current_view()
 
+        save_btn_text = "添加记录" if current_list else "确定"
         actions = [
             ft.TextButton("取消", on_click=lambda e: close_dialog_compat(dlg)),
-            ft.FilledButton("确定", on_click=save_love, style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400)),
+            ft.FilledButton(save_btn_text, on_click=save_love, style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400)),
         ]
-        if current_love:
-            actions.insert(0, ft.TextButton("清除", on_click=clear_love, style=ft.ButtonStyle(color=ft.Colors.RED_400)))
+        if current_list:
+            actions.insert(0, ft.TextButton("清除全部", on_click=clear_love, style=ft.ButtonStyle(color=ft.Colors.RED_400)))
+
+        dlg_content_list = []
+        if current_list:
+            dlg_content_list.extend([
+                ft.Text("当天已有打卡：", size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_700),
+                existing_items_col,
+                ft.Divider(height=6, color=ft.Colors.GREY_200),
+                ft.Text("追加一次打卡：", size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_700),
+            ])
+
+        dlg_content_list.extend([
+            ft.Row(
+                controls=[
+                    ft.Text("打卡时间：", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_800),
+                    time_input,
+                ],
+                alignment=ft.MainAxisAlignment.START,
+            ),
+            ft.Divider(height=6, color=ft.Colors.GREY_200),
+            ft.Text("选择避孕方式（点击选中）：", size=12, color=ft.Colors.GREY_600),
+            ft.Column(controls=option_widgets, spacing=6),
+        ])
 
         dlg = ft.AlertDialog(
             title=ft.Row(
@@ -1139,14 +1324,13 @@ def main(page: ft.Page):
             ),
             content=ft.Container(
                 content=ft.Column(
-                    controls=[
-                        ft.Text("请选择当天避孕措施：", size=12, color=ft.Colors.GREY_600),
-                        ft.Column(controls=chip_rows, spacing=8),
-                    ],
+                    controls=dlg_content_list,
                     tight=True,
-                    spacing=10,
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
                 ),
                 width=320,
+                height=380 if current_list else None,
             ),
             actions=actions,
             actions_alignment=ft.MainAxisAlignment.END,
@@ -1290,6 +1474,44 @@ def main(page: ft.Page):
 
         save_period_data(period_data)
         refresh_current_view()
+
+    # ---------------- 日历手势交互辅助方法（支持左右滑动切月） ----------------
+    def create_swipeable_calendar(calendar_control, on_swipe_left, on_swipe_right):
+        """
+        使用 ft.GestureDetector 包装日历卡片，支持移动端触屏与桌面端鼠标横向滑动快速切换月份：
+        - 向左滑动（拖动位移 < -35 或 释放速度 < -200）：触发 on_swipe_left（切换至下一月）；
+        - 向右滑动（拖动位移 > 35 或 释放速度 > 200）：触发 on_swipe_right（切换至上一月）；
+        - 单击日期单元格保持正常穿透与响应。
+        """
+        swipe_dx = 0
+
+        def on_drag_start(e):
+            nonlocal swipe_dx
+            swipe_dx = 0
+
+        def on_drag_update(e):
+            nonlocal swipe_dx
+            delta = getattr(e, "primary_delta", None)
+            if delta is None:
+                delta = getattr(e, "delta_x", 0)
+            if delta is not None:
+                swipe_dx += delta
+
+        def on_drag_end(e):
+            nonlocal swipe_dx
+            vel = getattr(e, "primary_velocity", 0) or 0
+            if swipe_dx < -35 or vel < -200:
+                on_swipe_left()
+            elif swipe_dx > 35 or vel > 200:
+                on_swipe_right()
+            swipe_dx = 0
+
+        return ft.GestureDetector(
+            content=calendar_control,
+            on_horizontal_drag_start=on_drag_start,
+            on_horizontal_drag_update=on_drag_update,
+            on_horizontal_drag_end=on_drag_end,
+        )
 
     def on_cell_click(d: str):
         """
@@ -1735,12 +1957,18 @@ def main(page: ft.Page):
                 border=border_all(1, ft.Colors.BLUE_200) if border_all else None,
             )
 
+        swipeable_calendar = create_swipeable_calendar(
+            build_calendar(current_year, current_month),
+            on_swipe_left=lambda: change_month(1),
+            on_swipe_right=lambda: change_month(-1),
+        )
+
         return ft.Container(
             content=ft.Column(
                 controls=[
                     month_nav_row,
                     month_stats_card,
-                    build_calendar(current_year, current_month),
+                    swipeable_calendar,
                     detail_card,
                 ],
                 spacing=10,
@@ -1838,7 +2066,8 @@ def main(page: ft.Page):
                     is_ovulation = (date_key in pred_ovulation_dates)
 
                     rec = period_records.get(date_key, {})
-                    has_love = bool(rec.get("love"))
+                    love_list = normalize_love_records(rec.get("love"))
+                    has_love = bool(love_list)
                     has_symptoms = bool(rec.get("symptoms"))
 
                     # 圆圈样式与色彩判断
@@ -1887,12 +2116,42 @@ def main(page: ft.Page):
 
                     num_text = "今" if (is_today and not is_actual and not is_pred and not is_ovulation) else str(day)
 
-                    # 身体记录小徽标（爱爱标💗，症状标🍵）
+                    # 身体记录区分小徽标：严格使用截图同款弯钩柄小雨伞 ☂️ (ft.Icons.UMBRELLA_OUTLINED, size=11) 与爱心 ♡
                     dot_controls = []
                     if has_love:
-                        dot_controls.append(ft.Icon(ft.Icons.FAVORITE, size=7, color=ft.Colors.PINK_400))
+                        has_unprotected = any(item.get("type") == "无措施" for item in love_list)
+                        has_protected = any(item.get("type") != "无措施" for item in love_list)
+
+                        # 绝对硬编码粉色与白色 SVG 伞型矢量图形 Data URI（100% 保证呈现伞顶尖角、半圆伞面与 J 型弯钩手柄外观，且颜色 100% 纯正粉色，兼容 Flet 全版本）
+                        UMBRELLA_PINK_SVG = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNFQzQwN0EiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTIgMnYyIi8+PHBhdGggZD0iTTEyIDRhOSA5IDAgMCAxIDkgOUgzYTkgOSAwIDAgMSA5LTl6Ii8+PHBhdGggZD0iTTEyIDEzdjZhMi41IDIuNSAwIDAgMS01IDAiLz48L3N2Zz4="
+                        UMBRELLA_WHITE_SVG = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTIgMnYyIi8+PHBhdGggZD0iTTEyIDRhOSA5IDAgMCAxIDkgOUgzYTkgOSAwIDAgMSA5LTl6Ii8+PHBhdGggZD0iTTEyIDEzdjZhMi41IDIuNSAwIDAgMS01IDAiLz48L3N2Zz4="
+
+                        umb_src = UMBRELLA_WHITE_SVG if is_actual else UMBRELLA_PINK_SVG
+
+                        # 安全套及有避孕措施打卡：渲染截图 100% 同款的 J 型弯钩手柄粉色雨伞 SVG
+                        if has_protected:
+                            dot_controls.append(
+                                ft.Image(
+                                    src=umb_src,
+                                    width=10,
+                                    height=10,
+                                    fit="contain",
+                                )
+                            )
+
+                        # 无措施打卡：渲染粉色爱心图标 ♡
+                        if has_unprotected:
+                            dot_controls.append(
+                                ft.Icon(
+                                    ft.Icons.FAVORITE_BORDER,
+                                    size=10,
+                                    color=ft.Colors.WHITE if is_actual else ft.Colors.PINK_400,
+                                )
+                            )
+
                     if has_symptoms:
-                        dot_controls.append(ft.Icon(ft.Icons.SPA_ROUNDED, size=7, color=ft.Colors.AMBER_700))
+                        symptom_color = ft.Colors.WHITE_70 if is_actual else ft.Colors.AMBER_700
+                        dot_controls.append(ft.Icon(ft.Icons.SPA_ROUNDED, size=7, color=symptom_color))
 
                     circle_content_list = [
                         ft.Text(num_text, size=13, weight=num_weight, color=num_color)
@@ -2138,11 +2397,36 @@ def main(page: ft.Page):
         # 4. 红框三：身体记录项（仅保留 爱爱 与 症状）
         period_records = period_data.get("records", {})
         sel_rec = period_records.get(period_selected_date_str, {})
-        love_list = sel_rec.get("love", [])
+        love_records = normalize_love_records(sel_rec.get("love", []))
         symptom_list = sel_rec.get("symptoms", [])
+        # 症状显示文本：若有已选症状则以顿号连接展示，若无记录则展示“未记录”
+        symptom_display = "、".join(symptom_list) if symptom_list else "未记录"
 
-        love_display = " · ".join(love_list) if love_list else "未记录"
-        symptom_display = " · ".join(symptom_list) if symptom_list else "未记录"
+        # 格式化爱爱记录展示（与美柚截图完全一致：记录1次 / 时间22:56, 无措施）
+        if love_records:
+            count_text = f"记录{len(love_records)}次"
+            latest_item = love_records[-1]
+            t = latest_item.get("time", "")
+            typ = latest_item.get("type", "")
+            if t and typ:
+                time_desc = f"时间{t}, {typ}"
+            elif typ:
+                time_desc = typ
+            elif t:
+                time_desc = f"时间{t}"
+            else:
+                time_desc = "已记录"
+
+            love_info_col = ft.Column(
+                controls=[
+                    ft.Text(count_text, size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_900),
+                    ft.Text(time_desc, size=11, color=ft.Colors.GREY_600),
+                ],
+                spacing=1,
+                horizontal_alignment=ft.CrossAxisAlignment.END,
+            )
+        else:
+            love_info_col = ft.Text("未记录", size=12, color=ft.Colors.GREY_400)
 
         love_row = ft.Row(
             controls=[
@@ -2150,16 +2434,21 @@ def main(page: ft.Page):
                     controls=[
                         ft.Icon(ft.Icons.FAVORITE, color=ft.Colors.PINK_400, size=20),
                         ft.Text("爱爱", size=14, weight=ft.FontWeight.W_500),
-                        ft.Text(f"({love_display})", size=12, color=ft.Colors.PINK_600 if love_list else ft.Colors.GREY_400),
                     ],
                     spacing=8,
                 ),
-                ft.IconButton(
-                    icon=ft.Icons.CHECK_CIRCLE if love_list else ft.Icons.ADD_CIRCLE_OUTLINE,
-                    icon_color=ft.Colors.PINK_400,
-                    icon_size=20,
-                    tooltip="记录爱爱",
-                    on_click=lambda e: open_love_record_dialog(period_selected_date_str),
+                ft.Row(
+                    controls=[
+                        love_info_col,
+                        ft.IconButton(
+                            icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                            icon_color=ft.Colors.PINK_400,
+                            icon_size=20,
+                            tooltip="记录爱爱",
+                            on_click=lambda e: open_love_record_dialog(period_selected_date_str),
+                        ),
+                    ],
+                    spacing=8,
                 ),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -2201,11 +2490,17 @@ def main(page: ft.Page):
             border=border_all(1, ft.Colors.GREY_200) if border_all else None,
         )
 
+        swipeable_calendar_card = create_swipeable_calendar(
+            calendar_card,
+            on_swipe_left=lambda: change_period_month(1),
+            on_swipe_right=lambda: change_period_month(-1),
+        )
+
         return ft.Container(
             content=ft.Column(
                 controls=[
                     month_nav_row,
-                    calendar_card,
+                    swipeable_calendar_card,
                     period_status_card,
                     body_records_card,
                 ],
@@ -2316,7 +2611,7 @@ def main(page: ft.Page):
             border=border_all(1, ft.Colors.GREY_200) if border_all else None,
         )
 
-        # 历史记录明细列表
+        # 历史记录明细列表（在明细区域内独立滚动）
         sorted_keys = sorted(records.keys(), reverse=True)
         history_items = []
         if not sorted_keys:
@@ -2324,7 +2619,8 @@ def main(page: ft.Page):
                 ft.Container(
                     content=ft.Text("暂无打卡记录", color=ft.Colors.GREY_500, size=13),
                     alignment=ALIGN_CENTER,
-                    padding=16,
+                    padding=20,
+                    expand=True,
                 )
             )
         else:
@@ -2415,18 +2711,28 @@ def main(page: ft.Page):
                     )
                 )
 
+        # 历史打卡明细卡片：内嵌独立滚动列表，滚动条直接呈现在明细区域
+        history_list_column = ft.Column(
+            controls=history_items,
+            spacing=0,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
         history_card = ft.Container(
             content=ft.Column(
                 controls=[
                     ft.Text("历史打卡明细", size=15, weight=ft.FontWeight.BOLD),
-                    ft.Column(controls=history_items, spacing=0),
+                    history_list_column,
                 ],
                 spacing=8,
+                expand=True,
             ),
             bgcolor=ft.Colors.WHITE,
             padding=ft.Padding(14, 12, 14, 12),
             border_radius=12,
             border=border_all(1, ft.Colors.GREY_200) if border_all else None,
+            expand=True,
         )
 
         return ft.Container(
@@ -2437,7 +2743,7 @@ def main(page: ft.Page):
                     history_card,
                 ],
                 spacing=10,
-                scroll=ft.ScrollMode.AUTO,
+                expand=True,
             ),
             padding=ft.Padding(12, 8, 12, 16),
             expand=True,
@@ -2480,7 +2786,7 @@ def main(page: ft.Page):
             main_view_container.content = build_chart_view()
         else:
             appbar_title.value = "生理期管理"
-            page.appbar.actions = [period_settings_action_btn]
+            page.appbar.actions = [period_settings_action_btn, backup_action_btn]
             main_view_container.content = build_period_view()
         page.update()
 
