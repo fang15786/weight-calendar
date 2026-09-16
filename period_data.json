@@ -1,25 +1,2 @@
 {
-  "settings": {
-    "cycle_days": 28,
-    "period_days": 5,
-    "luteal_days": 14
-  },
-  "records": {
-    "2026-09-16": {
-      "love": [
-        {
-          "time": "09:20",
-          "type": "安全套"
-        }
-      ]
-    },
-    "2026-09-15": {
-      "love": [
-        {
-          "time": "09:21",
-          "type": "无措施"
-        }
-      ]
-    }
-  }
 }
