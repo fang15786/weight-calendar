@@ -2062,19 +2062,19 @@ def main(page: ft.Page):
         month_matrix = cal.monthdayscalendar(year, month)
         weekday_headers = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
-        # 星期标题栏（调小高度至 20px）
+        # 星期标题栏
         header_row = ft.Row(
             controls=[
                 ft.Container(
                     content=ft.Text(
                         w,
                         weight=ft.FontWeight.W_500,
-                        size=11,
+                        size=12,
                         color=ft.Colors.GREY_500
                     ),
                     alignment=ALIGN_CENTER,
                     expand=1,
-                    height=20,
+                    height=24,
                 )
                 for w in weekday_headers
             ],
@@ -2093,7 +2093,7 @@ def main(page: ft.Page):
             cols = []
             for day in week:
                 if day == 0:
-                    cols.append(ft.Container(expand=1, height=38))
+                    cols.append(ft.Container(expand=1, height=46))
                 else:
                     date_key = f"{year:04d}-{month:02d}-{day:02d}"
                     is_today = (date_key == today_str)
@@ -2167,8 +2167,8 @@ def main(page: ft.Page):
                             dot_controls.append(
                                 ft.Image(
                                     src=umb_src,
-                                    width=8,
-                                    height=8,
+                                    width=9,
+                                    height=9,
                                     fit="contain",
                                 )
                             )
@@ -2178,17 +2178,17 @@ def main(page: ft.Page):
                             dot_controls.append(
                                 ft.Icon(
                                     ft.Icons.FAVORITE_BORDER,
-                                    size=8,
+                                    size=9,
                                     color=ft.Colors.WHITE if is_actual else ft.Colors.PINK_400,
                                 )
                             )
 
                     if has_symptoms:
                         symptom_color = ft.Colors.WHITE_70 if is_actual else ft.Colors.AMBER_700
-                        dot_controls.append(ft.Icon(ft.Icons.SPA_ROUNDED, size=6, color=symptom_color))
+                        dot_controls.append(ft.Icon(ft.Icons.SPA_ROUNDED, size=7, color=symptom_color))
 
                     circle_content_list = [
-                        ft.Text(num_text, size=12, weight=num_weight, color=num_color)
+                        ft.Text(num_text, size=13, weight=num_weight, color=num_color)
                     ]
                     if dot_controls:
                         circle_content_list.append(
@@ -2200,44 +2200,44 @@ def main(page: ft.Page):
                             controls=circle_content_list,
                             alignment=ft.MainAxisAlignment.CENTER,
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            spacing=0,
+                            spacing=1,
                         ),
-                        width=34,
-                        height=34,
-                        border_radius=17,
+                        width=38,
+                        height=38,
+                        border_radius=19,
                         bgcolor=circle_bgcolor,
                         border=circle_border,
                         alignment=ALIGN_CENTER,
                     )
 
-                    # 单元格容器：调小高度适配整屏，保持紧凑纯圆视觉
+                    # 单元格容器：高度 46px，圆圈间距疏密得当，不挤压也不产生滚动条
                     cell = ft.Container(
                         content=circle_widget,
                         expand=1,
-                        height=38,
+                        height=46,
                         alignment=ALIGN_CENTER,
-                        border_radius=8,
+                        border_radius=10,
                         border=None,
                         on_click=lambda e, d=date_key: on_period_cell_click(d),
                     )
                     cols.append(cell)
-            calendar_rows.append(ft.Row(controls=cols, spacing=2))
+            calendar_rows.append(ft.Row(controls=cols, spacing=3))
 
         return ft.Container(
-            content=ft.Column(controls=calendar_rows, spacing=2),
+            content=ft.Column(controls=calendar_rows, spacing=3),
             bgcolor=ft.Colors.WHITE,
-            padding=ft.Padding(6, 4, 6, 4),
+            padding=ft.Padding(8, 6, 8, 6),
             border=border_all(1, ft.Colors.GREY_200) if border_all else None,
-            border_radius=12,
+            border_radius=14,
         )
 
     def build_period_view():
         """
-        组装移动端【生理期】页面内容（严格按照图二红框内的三个模块）：
+        组装移动端【生理期】页面内容：
         1. 顶部月份切换与周期参数设置；
-        2. 红框一：紧凑周期日历与图例（经期、预测经期、排卵期）及生理状态提示，严格适配免滚动；
-        3. 红框二：经期快捷确认卡片（“经期开始了吗？” 或 “经期正在进行中”）；
-        4. 红框三：身体记录项（仅包含 💗 爱爱 与 🍵 症状），底部卡片 expand 延伸与 Tab 2 趋势分析完全平齐对齐。
+        2. 日历卡片：46px 舒适网格高度，圆形尺寸 38px，疏朗自然，杜绝密集感与外部滚动条；
+        3. 经期快捷确认卡片；
+        4. 身体记录卡片（爱爱与症状）：占比协调，底部与 Tab 2（趋势分析）严格平齐。
         """
         predictions = calculate_period_predictions(period_data)
         is_cur_month = (period_current_year == now.year and period_current_month == now.month)
@@ -2257,7 +2257,7 @@ def main(page: ft.Page):
                         ),
                         ft.Text(
                             f"{period_current_year} 年 {period_current_month:02d} 月",
-                            size=15,
+                            size=16,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.GREY_900,
                         ),
@@ -2299,9 +2299,9 @@ def main(page: ft.Page):
                 ft.Row(
                     controls=[
                         ft.Container(width=8, height=8, border_radius=4, bgcolor=ft.Colors.PINK_400),
-                        ft.Text("经期", size=10, color=ft.Colors.GREY_700),
+                        ft.Text("经期", size=11, color=ft.Colors.GREY_700),
                     ],
-                    spacing=3,
+                    spacing=4,
                 ),
                 ft.Row(
                     controls=[
@@ -2312,9 +2312,9 @@ def main(page: ft.Page):
                             bgcolor=ft.Colors.PINK_50,
                             border=border_all(1, ft.Colors.PINK_200) if border_all else None
                         ),
-                        ft.Text("预测经期", size=10, color=ft.Colors.GREY_700),
+                        ft.Text("预测经期", size=11, color=ft.Colors.GREY_700),
                     ],
-                    spacing=3,
+                    spacing=4,
                 ),
                 ft.Row(
                     controls=[
@@ -2325,12 +2325,12 @@ def main(page: ft.Page):
                             bgcolor=ft.Colors.PURPLE_50,
                             border=border_all(1, ft.Colors.PURPLE_200) if border_all else None
                         ),
-                        ft.Text("排卵期", size=10, color=ft.Colors.GREY_700),
+                        ft.Text("排卵期", size=11, color=ft.Colors.GREY_700),
                     ],
-                    spacing=3,
+                    spacing=4,
                 ),
             ],
-            spacing=12,
+            spacing=14,
         )
 
         # 计算当前聚焦日期的阶段
@@ -2340,8 +2340,8 @@ def main(page: ft.Page):
 
         phase_row = ft.Row(
             controls=[
-                ft.Text("记经期", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.PINK_400),
-                ft.Text(f"推算{date_prefix}处于：{phase_text}", size=11, color=ft.Colors.GREY_700),
+                ft.Text("记经期", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.PINK_400),
+                ft.Text(f"推算{date_prefix}处于：{phase_text}", size=12, color=ft.Colors.GREY_700),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
@@ -2351,14 +2351,14 @@ def main(page: ft.Page):
                 controls=[
                     build_period_calendar(period_current_year, period_current_month, predictions),
                     legend_row,
-                    ft.Divider(height=4, color=ft.Colors.GREY_100),
+                    ft.Divider(height=6, color=ft.Colors.GREY_100),
                     phase_row,
                 ],
-                spacing=4,
+                spacing=5,
             ),
             bgcolor=ft.Colors.WHITE,
-            padding=ft.Padding(10, 8, 10, 8),
-            border_radius=12,
+            padding=ft.Padding(12, 10, 12, 10),
+            border_radius=14,
             border=border_all(1, ft.Colors.GREY_200) if border_all else None,
         )
 
@@ -2370,7 +2370,7 @@ def main(page: ft.Page):
             period_status_card = ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Text(f"{period_selected_date_str} 经期正在进行中", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_900),
+                        ft.Text(f"{period_selected_date_str} 经期正在进行中", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_900),
                         ft.Row(
                             controls=[
                                 ft.OutlinedButton(
@@ -2378,13 +2378,13 @@ def main(page: ft.Page):
                                     style=ft.ButtonStyle(
                                         color=ft.Colors.PINK_500,
                                         side=ft.BorderSide(1, ft.Colors.PINK_300),
-                                        padding=ft.Padding(16, 4, 16, 4),
+                                        padding=ft.Padding(18, 6, 18, 6),
                                     ),
                                     on_click=lambda e: toggle_period_status(period_selected_date_str, start=False),
                                 ),
                                 ft.FilledButton(
                                     "还在继续",
-                                    style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400, padding=ft.Padding(16, 4, 16, 4)),
+                                    style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400, padding=ft.Padding(18, 6, 18, 6)),
                                     on_click=lambda e: None,
                                 ),
                             ],
@@ -2393,18 +2393,18 @@ def main(page: ft.Page):
                         ),
                     ],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=8,
+                    spacing=10,
                 ),
                 bgcolor=ft.Colors.WHITE,
-                padding=ft.Padding(14, 8, 14, 8),
-                border_radius=12,
+                padding=ft.Padding(16, 12, 16, 12),
+                border_radius=14,
                 border=border_all(1, ft.Colors.PINK_200) if border_all else None,
             )
         else:
             period_status_card = ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Text(f"{period_selected_date_str} 经期开始了吗？", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_900),
+                        ft.Text(f"{period_selected_date_str} 经期开始了吗？", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_900),
                         ft.Row(
                             controls=[
                                 ft.OutlinedButton(
@@ -2412,13 +2412,13 @@ def main(page: ft.Page):
                                     style=ft.ButtonStyle(
                                         color=ft.Colors.GREY_700,
                                         side=ft.BorderSide(1, ft.Colors.GREY_300),
-                                        padding=ft.Padding(16, 4, 16, 4),
+                                        padding=ft.Padding(18, 6, 18, 6),
                                     ),
                                     on_click=lambda e: None,
                                 ),
                                 ft.FilledButton(
                                     "开始了",
-                                    style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400, padding=ft.Padding(16, 4, 16, 4)),
+                                    style=ft.ButtonStyle(bgcolor=ft.Colors.PINK_400, padding=ft.Padding(18, 6, 18, 6)),
                                     on_click=lambda e: toggle_period_status(period_selected_date_str, start=True),
                                 ),
                             ],
@@ -2427,11 +2427,11 @@ def main(page: ft.Page):
                         ),
                     ],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=8,
+                    spacing=10,
                 ),
                 bgcolor=ft.Colors.WHITE,
-                padding=ft.Padding(14, 8, 14, 8),
-                border_radius=12,
+                padding=ft.Padding(16, 12, 16, 12),
+                border_radius=14,
                 border=border_all(1, ft.Colors.GREY_200) if border_all else None,
             )
 
@@ -2460,21 +2460,21 @@ def main(page: ft.Page):
 
             love_info_col = ft.Column(
                 controls=[
-                    ft.Text(count_text, size=11, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_900),
-                    ft.Text(time_desc, size=10, color=ft.Colors.GREY_600),
+                    ft.Text(count_text, size=12, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_900),
+                    ft.Text(time_desc, size=11, color=ft.Colors.GREY_600),
                 ],
                 spacing=1,
                 horizontal_alignment=ft.CrossAxisAlignment.END,
             )
         else:
-            love_info_col = ft.Text("未记录", size=11, color=ft.Colors.GREY_400)
+            love_info_col = ft.Text("未记录", size=12, color=ft.Colors.GREY_400)
 
         love_row = ft.Row(
             controls=[
                 ft.Row(
                     controls=[
-                        ft.Icon(ft.Icons.FAVORITE, color=ft.Colors.PINK_400, size=18),
-                        ft.Text("爱爱", size=13, weight=ft.FontWeight.W_500),
+                        ft.Icon(ft.Icons.FAVORITE, color=ft.Colors.PINK_400, size=20),
+                        ft.Text("爱爱", size=14, weight=ft.FontWeight.W_500),
                     ],
                     spacing=6,
                 ),
@@ -2484,7 +2484,7 @@ def main(page: ft.Page):
                         ft.IconButton(
                             icon=ft.Icons.ADD_CIRCLE_OUTLINE,
                             icon_color=ft.Colors.PINK_400,
-                            icon_size=18,
+                            icon_size=20,
                             padding=ft.Padding(2, 2, 2, 2),
                             tooltip="记录爱爱",
                             on_click=lambda e: open_love_record_dialog(period_selected_date_str),
@@ -2500,16 +2500,16 @@ def main(page: ft.Page):
             controls=[
                 ft.Row(
                     controls=[
-                        ft.Icon(ft.Icons.SPA_ROUNDED, color=ft.Colors.PINK_400, size=18),
-                        ft.Text("症状", size=13, weight=ft.FontWeight.W_500),
-                        ft.Text(f"({symptom_display})", size=11, color=ft.Colors.PINK_600 if symptom_list else ft.Colors.GREY_400, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Icon(ft.Icons.SPA_ROUNDED, color=ft.Colors.PINK_400, size=20),
+                        ft.Text("症状", size=14, weight=ft.FontWeight.W_500),
+                        ft.Text(f"({symptom_display})", size=12, color=ft.Colors.PINK_600 if symptom_list else ft.Colors.GREY_400, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                     ],
                     spacing=6,
                 ),
                 ft.IconButton(
                     icon=ft.Icons.CHECK_CIRCLE if symptom_list else ft.Icons.ADD_CIRCLE_OUTLINE,
                     icon_color=ft.Colors.PINK_400,
-                    icon_size=18,
+                    icon_size=20,
                     padding=ft.Padding(2, 2, 2, 2),
                     tooltip="记录症状",
                     on_click=lambda e: open_symptom_record_dialog(period_selected_date_str),
@@ -2518,20 +2518,20 @@ def main(page: ft.Page):
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
 
-        # 身体记录卡片：设置 expand=True，底部边距与 Tab 2 趋势分析历史卡片严格保持平齐
+        # 身体记录卡片：高度协调饱满，底部边缘与 Tab 2 趋势分析严格保持平齐
         body_records_card = ft.Container(
             content=ft.Column(
                 controls=[
                     love_row,
-                    ft.Divider(height=1, color=ft.Colors.GREY_100),
+                    ft.Divider(height=10, color=ft.Colors.GREY_100),
                     symptom_row,
                 ],
-                spacing=6,
+                spacing=8,
                 scroll=ft.ScrollMode.AUTO,
             ),
             bgcolor=ft.Colors.WHITE,
-            padding=ft.Padding(14, 10, 14, 10),
-            border_radius=12,
+            padding=ft.Padding(16, 14, 16, 14),
+            border_radius=14,
             border=border_all(1, ft.Colors.GREY_200) if border_all else None,
             expand=True,
         )
@@ -2550,10 +2550,10 @@ def main(page: ft.Page):
                     period_status_card,
                     body_records_card,
                 ],
-                spacing=10,
+                spacing=8,
                 expand=True,
             ),
-            padding=ft.Padding(12, 8, 12, 16),
+            padding=ft.Padding(12, 6, 12, 16),
             expand=True,
         )
 
