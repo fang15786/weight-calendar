@@ -2109,6 +2109,10 @@ def main(page: ft.Page):
                     has_love = bool(love_list)
                     has_symptoms = bool(rec.get("symptoms"))
 
+                    # 单元格外层容器：不加边框与背景色，保持干净清爽
+                    cell_border = None
+                    cell_bgcolor = ft.Colors.TRANSPARENT
+
                     # 圆圈样式与色彩判断
                     circle_border = None
                     if is_actual:
@@ -2120,13 +2124,13 @@ def main(page: ft.Page):
                     elif is_pred:
                         # 浅粉色圈（预测经期）
                         circle_bgcolor = ft.Colors.PINK_50
-                        circle_border = border_all(1.5, ft.Colors.PINK_200) if border_all else None
+                        circle_border = border_all(1.2, ft.Colors.PINK_200) if border_all else None
                         num_color = ft.Colors.PINK_400
                         num_weight = ft.FontWeight.BOLD
                     elif is_ovulation_main:
                         # 深紫强化圈（排卵日）
                         circle_bgcolor = ft.Colors.PURPLE_50
-                        circle_border = border_all(2.0, ft.Colors.PURPLE_300) if border_all else None
+                        circle_border = border_all(1.5, ft.Colors.PURPLE_200) if border_all else None
                         num_color = ft.Colors.PURPLE_600
                         num_weight = ft.FontWeight.BOLD
                     elif is_ovulation:
@@ -2138,14 +2142,14 @@ def main(page: ft.Page):
                     elif is_today:
                         # 今天默认浅青色圈
                         circle_bgcolor = ft.Colors.CYAN_50
-                        circle_border = border_all(1.5, ft.Colors.CYAN_300) if border_all else None
+                        circle_border = border_all(1.2, ft.Colors.CYAN_300) if border_all else None
                         num_color = ft.Colors.CYAN_800
                         num_weight = ft.FontWeight.BOLD
                     elif is_selected:
-                        # 选中且无特殊状态时，使用柔和淡粉圈标识
+                        # 选中普通日期：无外框，内圈使用清爽极浅粉底色与柔和粉色细圈
                         circle_bgcolor = ft.Colors.PINK_50
-                        circle_border = border_all(1.5, ft.Colors.PINK_300) if border_all else None
-                        num_color = ft.Colors.PINK_700
+                        circle_border = border_all(1.2, ft.Colors.PINK_300) if border_all else None
+                        num_color = ft.Colors.PINK_600
                         num_weight = ft.FontWeight.BOLD
                     else:
                         circle_bgcolor = ft.Colors.TRANSPARENT
@@ -2211,14 +2215,15 @@ def main(page: ft.Page):
                         alignment=ALIGN_CENTER,
                     )
 
-                    # 单元格容器：高度 38px，紧凑精致，杜绝密集感与外部滚动条
+                    # 单元格容器：高度 38px，紧凑精致，无额外矩形外框
                     cell = ft.Container(
                         content=circle_widget,
                         expand=1,
                         height=38,
                         alignment=ALIGN_CENTER,
                         border_radius=8,
-                        border=None,
+                        border=cell_border,
+                        bgcolor=cell_bgcolor,
                         on_click=lambda e, d=date_key: on_period_cell_click(d),
                     )
                     cols.append(cell)
